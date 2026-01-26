@@ -1,4 +1,4 @@
-name: notion discord bot test
+name: notion discord bot
 
 on:
   push:
