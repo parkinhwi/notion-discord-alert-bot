@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ] # 푸시할 때마다 실행 (테스트 및 인식용)
   schedule:
-    - cron: '*/20 * * * *' # 20분 반복 실행
+    - cron: '0 */1 * * *' # 20분 반복 실행
   workflow_dispatch:
 
 jobs:
