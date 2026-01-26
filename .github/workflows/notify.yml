@@ -3,8 +3,6 @@ name: notion discord bot test
 on:
   push:
     branches: [ main ]
-  schedule:
-    - cron: '*/20 * * * *'  # Every 20 minutes for testing
   workflow_dispatch:
 
 jobs:
