@@ -31,7 +31,7 @@ Google Calendar 일정도 Notion에 동기화한 뒤 Discord에 함께 보여주
 ---
 
 ## 📸 미리보기
-<img width="525" height="539" alt="Image" src="https://github.com/user-attachments/assets/72c7a329-e088-44f7-afeb-eda97729eab6" />
+<img width="680" height="1150" alt="Image" src="https://github.com/user-attachments/assets/6a868407-771b-4d9c-9c2a-8704439edfa2" />
 
 디스코드의 스레드를 이용해서 깔끔하게 todo 기록을 관리할 수 있어요.
 
