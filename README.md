@@ -7,8 +7,9 @@ Google Calendar 일정도 Notion에 동기화한 뒤 Discord에 함께 보여주
 설정한 주기마다 자동으로 Discord 메시지를 업데이트합니다.
 
 
----
 
+
+---
 
 ## ✨ 주요 기능
 
@@ -31,8 +32,9 @@ Google Calendar 일정도 Notion에 동기화한 뒤 Discord에 함께 보여주
   - 시작 전 / 진행 중 / 완료 로 states가 자동 설정됨
 
 
----
 
+
+---
 
 ## 📸 미리보기
 <img width="680" height="1150" alt="Image" src="https://github.com/user-attachments/assets/6a868407-771b-4d9c-9c2a-8704439edfa2" />
@@ -67,8 +69,9 @@ __(보류) 영상 편집__
 ```
 
 
----
 
+
+---
 
 # 🚀 설정 가이드
 
@@ -84,8 +87,9 @@ __(보류) 영상 편집__
 9. [테스트 및 확인](#9-테스트-및-확인)
 
 
----
 
+
+---
 
 ## 1. 사전 준비
 
@@ -97,8 +101,9 @@ __(보류) 영상 편집__
 - [ ] 이메일 주소 (Cron-job.org 가입용)
 
 
----
 
+
+---
 
 ## 2. Notion 설정
 
@@ -140,8 +145,9 @@ Notion에서 `/table` → **Table - Inline**로 데이터베이스를 만들고 
 - -
 
 
----
 
+
+---
 
 ## 3. Discord 웹훅 만들기
 
@@ -158,8 +164,9 @@ https://discord.com/api/webhooks/123456789/abcdefghijklmnop
 > ⚠️ 이 URL은 절대 공개하지 마세요.
 
 
----
 
+
+---
 
 ## 4. Google Calendar API 설정
 
@@ -173,8 +180,9 @@ https://discord.com/api/webhooks/123456789/abcdefghijklmnop
 > 캘린더 공유 설정에서 서비스 계정 이메일에 **캘린더 읽기 권한**을 반드시 부여해야 합니다.
 
 
----
 
+
+---
 
 ## 5. GitHub 레포지토리 만들기
 
@@ -186,8 +194,9 @@ https://discord.com/api/webhooks/123456789/abcdefghijklmnop
 - `discord_state.json` (권장)
 
 
----
 
+
+---
 
 ## 6. Notion API 연동
 
@@ -196,8 +205,9 @@ https://discord.com/api/webhooks/123456789/abcdefghijklmnop
 3. 데이터베이스에서 Integration 연결(Share)
 
 
----
 
+
+---
 
 ## 7. GitHub Secrets 설정
 
@@ -215,8 +225,9 @@ GitHub → Settings → Secrets and variables → Actions → New repository sec
 - `GCAL_SYNC_EVERY_MINUTES` : 캘린더 동기화 주기(분). 예) `"60"`, `"360"`
 
 
----
 
+
+---
 
 ## 8. 외부 스케줄러 설정 (Cron-job.org)
 
@@ -225,8 +236,9 @@ GitHub Actions 스케줄 대신 cron-job.org로 `workflow_dispatch` 호출을 �
 - 30분마다 실행: `*/30 * * * *`
 
 
----
 
+
+---
 
 ## 9. 테스트 및 확인
 
@@ -236,13 +248,15 @@ GitHub Actions 스케줄 대신 cron-job.org로 `workflow_dispatch` 호출을 �
 4. “취소/거절” 일정이 제외되는지 확인
 
 
----
 
+
+---
 
 ## ⚙️ Notion 필터(오늘/어제/내일 버튼용)
 
 <img width="729" height="142" alt="Image" src="https://github.com/user-attachments/assets/258b694b-3ba2-4b45-91e9-438e84ac5a27" />
 Notion에서 날짜에 시간이 포함돼도 정상적으로 필터되도록 아래 수식을 사용하세요.
+
 
 ### 오늘
 ```notion
@@ -257,6 +271,7 @@ and(
 )
 ```
 
+
 ### 어제
 ```
 and(
@@ -269,6 +284,7 @@ and(
   )
 )
 ```
+
 
 ### 내일
 ```
@@ -284,8 +300,9 @@ and(
 ```
 
 
----
 
+
+---
 
 ## ⚙️ 커스터마이징
 
@@ -327,8 +344,9 @@ EMBED_COLOR = int("2ECC71", 16)  # 초록색
 ```
 
 
----
 
+
+---
 
 ## 🔧 문제 해결
 
@@ -352,31 +370,35 @@ EMBED_COLOR = int("2ECC71", 16)  # 초록색
 - `notify.yml` 파일 이름 확인
 
 
----
 
+
+---
 
 ## 📝 라이선스
 
 MIT License
 
 
----
 
+
+---
 
 ## 🤝 기여
 
 이슈나 개선 사항이 있으면 자유롭게 Issue를 열어주세요!
 
 
----
 
+
+---
 
 ## 📧 문의
 
 문제가 있으시면 GitHub Issues에 남겨주세요.
 
 
----
 
+
+---
 
 **Made with ❤️ for Notion & Discord users**
