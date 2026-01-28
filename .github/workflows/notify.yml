@@ -34,6 +34,9 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GCAL_ID: ${{ secrets.GCAL_ID }}
+          GCAL_OWNER_EMAIL: ${{ secrets.GCAL_OWNER_EMAIL }}
+          #GCAL_SYNC_EVERY_MINUTES: "360"   # (선택) 6시간=360, 1시간=60
+
         run: python script.py
 
       - name: Commit and Push
@@ -43,7 +46,6 @@ jobs:
           git add discord_state.json
           if ! git diff --cached --quiet; then
             git commit -m "Update discord message state [skip ci]"
-            # Pull with merge strategy instead of rebase to avoid conflicts
             git pull origin main --no-rebase || true
             git push origin main || echo "Push failed, but continuing..."
           fi
