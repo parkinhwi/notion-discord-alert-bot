@@ -27,16 +27,25 @@ def effective_date(now=None):
         base = base - timedelta(days=1)
     return base
 
-def effective_date_str(now=None):
-    return effective_date(now).strftime("%Y-%m-%d")
-
 def day_bounds_kst(date_obj):
     """
-    해당 날짜의 00:00:00 ~ 23:59:59 KST 범위
+    해당 날짜의 00:00:00 ~ 24:00:00 KST 범위
     """
     start = datetime(date_obj.year, date_obj.month, date_obj.day, 0, 0, 0, tzinfo=KST)
     end = start + timedelta(days=1)
     return start, end
+
+def format_time_kst(dt: datetime):
+    # 예: 2pm / 2:30pm
+    h = dt.hour
+    m = dt.minute
+    ap = "am" if h < 12 else "pm"
+    h12 = h % 12
+    if h12 == 0:
+        h12 = 12
+    if m == 0:
+        return f"{h12}{ap}"
+    return f"{h12}:{m:02d}{ap}"
 
 
 # ==============================
@@ -48,11 +57,11 @@ CATEGORY_PROP = "label"     # select: 캘린더 / 메인업무 / 외주 / 스포
 PRIORITY_PROP = "priority"  # select: -, 1, 2, 3, 4
 DATE_PROP = "date"          # date (range ok)
 
-# ✅ Calendar sync key (새로 만든 속성)
-GCAL_EVENT_ID_PROP = "gcal_event_id"  # Text (rich text)
+# Calendar sync key (Notion 속성: Text / Rich text)
+GCAL_EVENT_ID_PROP = "gcal_event_id"  # rich_text
 
 # ==============================
-# ✅ Category order (캘린더를 맨 위에 별도 섹션으로)
+# ✅ Category order
 # ==============================
 CATEGORY_ORDER = [
     ("캘린더", "📧"),
@@ -65,7 +74,11 @@ CATEGORY_ORDER = [
 
 PRIORITY_ORDER = ["1", "2", "3", "4", "-"]
 EMBED_COLOR = int("FF57CF", 16)
+
 STATE_FILE = "discord_state.json"
+
+# ✅ 캘린더 동기화 주기(분) — 여기만 바꾸면 됨
+GCAL_SYNC_EVERY_MINUTES = int(os.getenv("GCAL_SYNC_EVERY_MINUTES", "360"))  # 기본 6시간
 
 
 # ==============================
@@ -91,17 +104,54 @@ def parse_date_yyyy_mm_dd(s: str):
     except Exception:
         return None
 
-def format_time_kst(dt: datetime):
-    # 예: 2pm / 2:30pm
-    h = dt.hour
-    m = dt.minute
-    ap = "am" if h < 12 else "pm"
-    h12 = h % 12
-    if h12 == 0:
-        h12 = 12
-    if m == 0:
-        return f"{h12}{ap}"
-    return f"{h12}:{m:02d}{ap}"
+def safe_get_rich_text(page, prop_name):
+    prop = page["properties"].get(prop_name)
+    if not prop:
+        return None
+    if prop["type"] == "rich_text":
+        arr = prop["rich_text"]
+        if not arr:
+            return None
+        return "".join([x.get("plain_text", "") for x in arr])
+    return None
+
+def safe_get_title(page):
+    title_arr = page["properties"][TITLE_PROP]["title"]
+    if not title_arr:
+        return None
+    return title_arr[0]["plain_text"]
+
+def safe_get_select_name(page, prop_name):
+    prop = page["properties"].get(prop_name)
+    if not prop:
+        return None
+    if prop["type"] == "select":
+        return prop["select"]["name"] if prop["select"] else None
+    return None
+
+def safe_get_status_name(page):
+    prop = page["properties"].get(STATUS_PROP)
+    if not prop:
+        return None
+    if prop["type"] == "status":
+        return prop["status"]["name"] if prop["status"] else None
+    if prop["type"] == "select":
+        return prop["select"]["name"] if prop["select"] else None
+    return None
+
+def safe_get_date_range(page):
+    prop = page["properties"].get(DATE_PROP)
+    if not prop:
+        return (None, None)
+    if prop["type"] == "date" and prop["date"]:
+        start_raw = prop["date"].get("start")
+        end_raw = prop["date"].get("end")
+        start_d = parse_date_yyyy_mm_dd(start_raw)
+        end_d = parse_date_yyyy_mm_dd(end_raw) if end_raw else None
+        if start_d and not end_d:
+            end_d = start_d
+        return (start_d, end_d)
+    return (None, None)
 
 
 # ==============================
@@ -119,6 +169,26 @@ def load_state():
 def save_state(state: dict):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
+def should_run_gcal_sync(state: dict, now: datetime) -> bool:
+    """
+    마지막 동기화로부터 GCAL_SYNC_EVERY_MINUTES 이상 지났으면 실행
+    """
+    last = state.get("last_gcal_sync_at")  # ISO string
+    if not last:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(last)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+
+    delta = now.astimezone(timezone.utc) - last_dt.astimezone(timezone.utc)
+    return delta.total_seconds() >= (GCAL_SYNC_EVERY_MINUTES * 60)
+
+def mark_gcal_synced(state: dict, now: datetime):
+    state["last_gcal_sync_at"] = now.astimezone(timezone.utc).isoformat()
 
 
 # ==============================
@@ -188,54 +258,13 @@ def update_notion_page(page_id: str, props: dict):
     resp.raise_for_status()
     return resp.json()
 
-def safe_get_title(page):
-    title_arr = page["properties"][TITLE_PROP]["title"]
-    if not title_arr:
-        return None
-    return title_arr[0]["plain_text"]
-
-def safe_get_select_name(page, prop_name):
-    prop = page["properties"].get(prop_name)
-    if not prop:
-        return None
-    if prop["type"] == "select":
-        return prop["select"]["name"] if prop["select"] else None
-    return None
-
-def safe_get_status_name(page):
-    prop = page["properties"].get(STATUS_PROP)
-    if not prop:
-        return None
-    if prop["type"] == "status":
-        return prop["status"]["name"] if prop["status"] else None
-    if prop["type"] == "select":
-        return prop["select"]["name"] if prop["select"] else None
-    return None
-
-def safe_get_date_range(page):
-    prop = page["properties"].get(DATE_PROP)
-    if not prop:
-        return (None, None)
-    if prop["type"] == "date" and prop["date"]:
-        start_raw = prop["date"].get("start")
-        end_raw = prop["date"].get("end")
-        start_d = parse_date_yyyy_mm_dd(start_raw)
-        end_d = parse_date_yyyy_mm_dd(end_raw) if end_raw else None
-        if start_d and not end_d:
-            end_d = start_d
-        return (start_d, end_d)
-    return (None, None)
-
-def safe_get_rich_text(page, prop_name):
-    prop = page["properties"].get(prop_name)
-    if not prop:
-        return None
-    if prop["type"] == "rich_text":
-        arr = prop["rich_text"]
-        if not arr:
-            return None
-        return "".join([x.get("plain_text", "") for x in arr])
-    return None
+def archive_notion_page(page_id: str):
+    url = f"https://api.notion.com/v1/pages/{page_id}"
+    headers = notion_headers()
+    payload = {"archived": True}
+    resp = requests.patch(url, headers=headers, json=payload)
+    resp.raise_for_status()
+    return resp.json()
 
 
 # ==============================
@@ -264,7 +293,7 @@ def fetch_gcal_events_for_date(service, calendar_id: str, date_obj):
             timeMax=time_max,
             singleEvents=True,
             orderBy="startTime",
-            showDeleted=True,
+            showDeleted=False,  # ✅ 취소된/삭제된 이벤트는 아예 안 가져옴
             pageToken=page_token
         ).execute()
 
@@ -274,60 +303,61 @@ def fetch_gcal_events_for_date(service, calendar_id: str, date_obj):
             break
     return events
 
+def is_declined_for_me(ev) -> bool:
+    """
+    내가 '참석하지 않음' 누른 일정은 제외
+    - 가장 정확: GCAL_OWNER_EMAIL로 내 이메일 지정
+    - 대체: attendees 중 self=True가 있고 declined면 제외
+    """
+    attendees = ev.get("attendees") or []
+    my_email = (os.getenv("GCAL_OWNER_EMAIL") or "").strip().lower()
+
+    for a in attendees:
+        email = (a.get("email") or "").strip().lower()
+        status = (a.get("responseStatus") or "").strip().lower()
+        is_self = bool(a.get("self"))
+
+        if status == "declined":
+            if my_email and email == my_email:
+                return True
+            if is_self:
+                return True
+
+    return False
+
 def notion_props_for_gcal_event(ev, eff_date_obj):
     """
-    name: '제목 2pm' 형태로 들어가게
+    name: '제목 2pm' 형태
     label: 캘린더
-    states: 시작 전 (기본)
+    states: 시작 전(기본)
     priority: -
-    date: 해당 날짜(범위는 당일로)
+    date: 해당 날짜
     gcal_event_id: 고유 id
     """
     summary = ev.get("summary") or "(제목 없음)"
-    status = ev.get("status")  # confirmed / cancelled
 
-    # 시작시간
     start = ev.get("start", {})
     start_str = start.get("dateTime") or start.get("date")  # all-day면 date만 옴
-    title = summary
 
     if start.get("dateTime"):
-        # datetime
         dt = datetime.fromisoformat(start_str.replace("Z", "+00:00")).astimezone(KST)
         title = f"{summary} {format_time_kst(dt)}"
     else:
-        # all-day는 시간표시 없음
         title = summary
-
-    # 취소된 이벤트면 states = 보류로 표시(밑줄)
-    states_value = "시작 전"
-    if status == "cancelled":
-        states_value = "보류"
 
     eff_str = eff_date_obj.strftime("%Y-%m-%d")
 
     props = {
-        TITLE_PROP: {
-            "title": [{"text": {"content": title}}]
-        },
-        CATEGORY_PROP: {
-            "select": {"name": "캘린더"}
-        },
-        PRIORITY_PROP: {
-            "select": {"name": "-"}
-        },
-        DATE_PROP: {
-            "date": {"start": eff_str, "end": None}
-        },
-        GCAL_EVENT_ID_PROP: {
-            "rich_text": [{"text": {"content": ev["id"]}}]
-        }
+        TITLE_PROP: {"title": [{"text": {"content": title}}]},
+        CATEGORY_PROP: {"select": {"name": "캘린더"}},
+        PRIORITY_PROP: {"select": {"name": "-"}},
+        DATE_PROP: {"date": {"start": eff_str, "end": None}},
+        GCAL_EVENT_ID_PROP: {"rich_text": [{"text": {"content": ev["id"]}}]},
     }
 
-    # states는 status 타입/ select 타입 둘 다 대응되도록 "status"로 먼저 시도하고,
-    # Notion이 select면 자동으로 거부될 수 있으니 그땐 네 DB가 status인지 select인지 맞춰야 함.
-    # (대부분 status 타입이면 아래가 바로 먹힘)
-    props[STATUS_PROP] = {"status": {"name": states_value}}
+    # ✅ 캘린더 항목은 기본 시작 전
+    # (굳이 status/select 타입 분기할 필요 없이 try/catch로 처리)
+    props[STATUS_PROP] = {"status": {"name": "시작 전"}}
     return props
 
 def sync_gcal_to_notion(eff_date_obj):
@@ -338,10 +368,14 @@ def sync_gcal_to_notion(eff_date_obj):
     service = build_gcal_service()
     events = fetch_gcal_events_for_date(service, calendar_id, eff_date_obj)
 
-    # Notion에 이미 들어간 캘린더 일정들을 event_id로 조회해서 map 만들기
+    # ✅ 이번 날짜의 '캘린더' 페이지들만 가져오기 (정리/아카이브용)
+    eff_str = eff_date_obj.strftime("%Y-%m-%d")
     existing_pages = query_notion_database({
-        "property": GCAL_EVENT_ID_PROP,
-        "rich_text": {"is_not_empty": True}
+        "and": [
+            {"property": CATEGORY_PROP, "select": {"equals": "캘린더"}},
+            {"property": DATE_PROP, "date": {"equals": eff_str}},
+            {"property": GCAL_EVENT_ID_PROP, "rich_text": {"is_not_empty": True}},
+        ]
     })
 
     by_event_id = {}
@@ -350,13 +384,21 @@ def sync_gcal_to_notion(eff_date_obj):
         if eid:
             by_event_id[eid] = p
 
-    # 이번 날짜 범위 이벤트만 동기화
+    valid_event_ids = set()
+
     for ev in events:
         if "id" not in ev:
             continue
-        eid = ev["id"]
 
-        # cancelled 포함해서 업데이트/생성
+        # ✅ 취소/거절은 아예 스킵
+        if (ev.get("status") or "").lower() == "cancelled":
+            continue
+        if is_declined_for_me(ev):
+            continue
+
+        eid = ev["id"]
+        valid_event_ids.add(eid)
+
         props = notion_props_for_gcal_event(ev, eff_date_obj)
 
         if eid in by_event_id:
@@ -364,18 +406,22 @@ def sync_gcal_to_notion(eff_date_obj):
             try:
                 update_notion_page(page_id, props)
             except requests.HTTPError:
-                # states가 select 타입인 DB면 위 status 포맷이 실패할 수 있음 -> select로 재시도
+                # states가 select 타입인 경우 재시도
                 props2 = dict(props)
-                props2[STATUS_PROP] = {"select": {"name": props[STATUS_PROP]["status"]["name"]}}
+                props2[STATUS_PROP] = {"select": {"name": "시작 전"}}
                 update_notion_page(page_id, props2)
         else:
             try:
                 create_notion_page(props)
             except requests.HTTPError:
-                # states가 select 타입인 DB면 재시도
                 props2 = dict(props)
-                props2[STATUS_PROP] = {"select": {"name": props[STATUS_PROP]["status"]["name"]}}
+                props2[STATUS_PROP] = {"select": {"name": "시작 전"}}
                 create_notion_page(props2)
+
+    # ✅ 이번 날짜에 원래 존재했는데, 이제는 취소/거절/삭제 등으로 valid에 없는 것 → 아카이브
+    for eid, page in by_event_id.items():
+        if eid not in valid_event_ids:
+            archive_notion_page(page["id"])
 
 
 # ==============================
@@ -389,16 +435,13 @@ def priority_rank(priority_value):
 def format_task_line(title, status):
     s = status if status else "시작 전"
     line = f"({s}) {title}"
-
     if s == "완료":
         line = f"~~{line}~~"
     elif s == "보류":
         line = f"__{line}__"
-
     return line
 
 def fetch_notion_data_all_with_date():
-    # date 비어있지 않은 것만 전체 조회
     results = query_notion_database({
         "property": DATE_PROP,
         "date": {"is_not_empty": True}
@@ -440,7 +483,6 @@ def create_discord_payload(data, eff_str):
     lines = [f"📅 **{eff_str}**", ""]
 
     for idx, (cat, icon) in enumerate(CATEGORY_ORDER):
-        # 캘린더는 원하는 출력 형태로 헤더
         if cat == "캘린더":
             lines.append(f"{icon} **캘린더**")
         else:
@@ -489,17 +531,22 @@ def main():
     if not webhook_url:
         raise ValueError("DISCORD_WEBHOOK_URL이 비어있습니다.")
 
+    now = kst_now()
+    state = load_state()
+
     eff_date_obj = effective_date()
     eff = eff_date_obj.strftime("%Y-%m-%d")
 
-    # 1) 캘린더 -> 노션 동기화 먼저
-    sync_gcal_to_notion(eff_date_obj)
+    # ✅ 1) 캘린더 동기화는 "주기"에 맞을 때만 실행
+    if should_run_gcal_sync(state, now):
+        sync_gcal_to_notion(eff_date_obj)
+        mark_gcal_synced(state, now)
+        save_state(state)
 
-    # 2) 노션 -> 디스코드
+    # ✅ 2) 노션 -> 디스코드
     notion_data = fetch_notion_data_all_with_date()
     payload = create_discord_payload(notion_data, eff)
 
-    state = load_state()
     saved_date = state.get("date")
     saved_message_id = state.get("message_id")
 
@@ -508,7 +555,8 @@ def main():
         print(f"✅ Edited message: {saved_message_id}")
     else:
         new_id = send_new_message(webhook_url, payload)
-        state = {"date": eff, "message_id": new_id}
+        state["date"] = eff
+        state["message_id"] = new_id
         save_state(state)
         print(f"✅ Created new message: {new_id}")
 
