@@ -327,37 +327,99 @@ def is_declined_for_me(ev) -> bool:
 
 def notion_props_for_gcal_event(ev, eff_date_obj):
     """
-    name: '제목 2pm' 형태
-    label: 캘린더
-    states: 시작 전(기본)
-    priority: -
-    date: 해당 날짜
-    gcal_event_id: 고유 id
+    - name: '제목 2pm' 형태로 들어가게
+    - label: 캘린더
+    - states: 시작 전 / 진행 중 / 완료 (현재시간 기준 자동)
+    - priority: -
+    - date: 해당 날짜
+    - gcal_event_id: 고유 id
     """
     summary = ev.get("summary") or "(제목 없음)"
+    ev_status = ev.get("status")  # confirmed / cancelled
 
+    # ---- 1) 시작/종료 시각 파싱 (all-day 포함) ----
     start = ev.get("start", {})
-    start_str = start.get("dateTime") or start.get("date")  # all-day면 date만 옴
+    end = ev.get("end", {})
+
+    # Google Calendar 규칙:
+    # - dateTime 있으면 ISO datetime
+    # - all-day면 date만 오고, end.date는 "다음날"로 오는 경우가 많음
+    start_dt = None
+    end_dt = None
 
     if start.get("dateTime"):
-        dt = datetime.fromisoformat(start_str.replace("Z", "+00:00")).astimezone(KST)
-        title = f"{summary} {format_time_kst(dt)}"
+        start_str = start["dateTime"]
+        start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00")).astimezone(KST)
+    elif start.get("date"):
+        # all-day 시작: 해당 날짜 00:00 KST
+        sd = parse_date_yyyy_mm_dd(start["date"])
+        if sd:
+            start_dt = datetime(sd.year, sd.month, sd.day, 0, 0, 0, tzinfo=KST)
+
+    if end.get("dateTime"):
+        end_str = end["dateTime"]
+        end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00")).astimezone(KST)
+    elif end.get("date"):
+        # all-day 종료: 보통 다음날 00:00으로 옴 (Google 방식)
+        ed = parse_date_yyyy_mm_dd(end["date"])
+        if ed:
+            end_dt = datetime(ed.year, ed.month, ed.day, 0, 0, 0, tzinfo=KST)
+
+    # end가 비어있으면 안전하게 start + 1시간(임시) 처리
+    if start_dt and not end_dt:
+        end_dt = start_dt + timedelta(hours=1)
+
+    # ---- 2) Notion title 만들기 (시간 있으면 붙임) ----
+    title = summary
+    if start.get("dateTime") and start_dt:
+        title = f"{summary} {format_time_kst(start_dt)}"
     else:
+        # all-day는 시간표시 없음
         title = summary
+
+    # ---- 3) states 값 자동 판정 (현재시간 기준) ----
+    now_kst = kst_now()
+
+    # 취소된 이벤트는 아예 상태를 "보류"로 만들고 싶으면 여기서 처리 가능
+    # (너가 원래 "취소/불참은 안 불러오게" 할 거라면, 이건 거의 안 쓰임)
+    if ev_status == "cancelled":
+        states_value = "보류"
+    else:
+        # 정상 이벤트: 시간 비교로 상태 결정
+        if start_dt and end_dt:
+            if now_kst < start_dt:
+                states_value = "시작 전"
+            elif start_dt <= now_kst < end_dt:
+                states_value = "진행 중"
+            else:
+                states_value = "완료"
+        else:
+            # 시간 파싱 실패하면 기본값
+            states_value = "시작 전"
 
     eff_str = eff_date_obj.strftime("%Y-%m-%d")
 
     props = {
-        TITLE_PROP: {"title": [{"text": {"content": title}}]},
-        CATEGORY_PROP: {"select": {"name": "캘린더"}},
-        PRIORITY_PROP: {"select": {"name": "-"}},
-        DATE_PROP: {"date": {"start": eff_str, "end": None}},
-        GCAL_EVENT_ID_PROP: {"rich_text": [{"text": {"content": ev["id"]}}]},
+        TITLE_PROP: {
+            "title": [{"text": {"content": title}}]
+        },
+        CATEGORY_PROP: {
+            "select": {"name": "캘린더"}
+        },
+        PRIORITY_PROP: {
+            "select": {"name": "-"}
+        },
+        DATE_PROP: {
+            "date": {"start": eff_str, "end": None}
+        },
+        GCAL_EVENT_ID_PROP: {
+            "rich_text": [{"text": {"content": ev["id"]}}]
+        }
     }
 
-    # ✅ 캘린더 항목은 기본 시작 전
-    # (굳이 status/select 타입 분기할 필요 없이 try/catch로 처리)
-    props[STATUS_PROP] = {"status": {"name": "시작 전"}}
+    # states는 Notion DB에서 "Status 타입"일 수도 / "Select 타입"일 수도 있어서
+    # 일단 status로 넣고, 실패하면 호출부에서 select로 재시도하도록 되어있음
+    props[STATUS_PROP] = {"status": {"name": states_value}}
     return props
 
 def sync_gcal_to_notion(eff_date_obj):
