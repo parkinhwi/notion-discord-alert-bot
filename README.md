@@ -253,8 +253,8 @@ GitHub Actions 스케줄 대신 cron-job.org로 `workflow_dispatch` 호출을 �
 ---
 
 ## ⚙️ Notion 필터(오늘/어제/내일 버튼용)
-
 <img width="729" height="142" alt="Image" src="https://github.com/user-attachments/assets/258b694b-3ba2-4b45-91e9-438e84ac5a27" />
+
 Notion에서 날짜에 시간이 포함돼도 정상적으로 필터되도록 아래 수식을 사용하세요.
 
 
