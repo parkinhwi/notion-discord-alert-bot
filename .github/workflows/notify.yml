@@ -5,20 +5,24 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+concurrency:
+  group: notion-discord-bot
+  cancel-in-progress: true
+
 jobs:
   notify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
@@ -35,8 +39,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GCAL_ID: ${{ secrets.GCAL_ID }}
           GCAL_OWNER_EMAIL: ${{ secrets.GCAL_OWNER_EMAIL }}
-          #GCAL_SYNC_EVERY_MINUTES: "360"   # (선택) 6시간=360, 1시간=60
-
+          GCAL_SYNC_EVERY_MINUTES: "30"
         run: python script.py
 
       - name: Commit and Push
