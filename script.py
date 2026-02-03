@@ -1,18 +1,19 @@
 import os
 import json
+import re
 import requests
 from datetime import datetime, timezone, timedelta
-import re
 
 # Google Calendar
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+
 # ==============================
 # ✅ Time / Rollover
 # ==============================
 KST = timezone(timedelta(hours=9))
-ROLLOVER_HOUR = 11  # 오전 11시 기준
+ROLLOVER_HOUR = 11  # 오전 11시 기준(디코/오늘 기준)
 
 def kst_now():
     return datetime.now(KST)
@@ -29,7 +30,7 @@ def effective_date(now=None):
 
 def day_bounds_kst(date_obj):
     """
-    해당 날짜의 00:00:00 ~ 24:00:00 KST 범위
+    해당 날짜의 00:00:00 ~ 다음날 00:00:00 KST 범위
     """
     start = datetime(date_obj.year, date_obj.month, date_obj.day, 0, 0, 0, tzinfo=KST)
     end = start + timedelta(days=1)
@@ -55,10 +56,10 @@ TITLE_PROP = "name"         # title
 STATUS_PROP = "states"      # status/select: 시작 전 / 진행 중 / 완료 / 보류
 CATEGORY_PROP = "label"     # select: 캘린더 / 메인업무 / 외주 / 스포클 / 유튜브 / 기타
 PRIORITY_PROP = "priority"  # select: -, 1, 2, 3, 4
-DATE_PROP = "date"          # date (range ok)
+DATE_PROP = "date"          # date (date or datetime, range ok)
 
-# Calendar sync key (Notion 속성: Text / Rich text)
-GCAL_EVENT_ID_PROP = "gcal_event_id"  # rich_text
+# Calendar sync key (Notion 속성: Rich text)
+GCAL_EVENT_ID_PROP = "gcal_event_id"
 
 # ==============================
 # ✅ Category order
@@ -74,13 +75,15 @@ CATEGORY_ORDER = [
 
 PRIORITY_ORDER = ["1", "2", "3", "4", "-"]
 EMBED_COLOR = int("FF57CF", 16)
-
 STATE_FILE = "discord_state.json"
 
 # ✅ 캘린더 동기화 주기(분)
-# - yml에서 GCAL_SYNC_EVERY_MINUTES를 넘기면 그 값 사용
+# - yml에서 GCAL_SYNC_EVERY_MINUTES 넘기면 그 값 사용
 # - 기본값 30분
 GCAL_SYNC_EVERY_MINUTES = int(os.getenv("GCAL_SYNC_EVERY_MINUTES", "30"))
+
+# ✅ 캘린더/노션 조회 범위(어제/오늘/내일)
+WINDOW_DAYS = [-1, 0, 1]
 
 
 # ==============================
@@ -106,57 +109,27 @@ def parse_date_yyyy_mm_dd(s: str):
     except Exception:
         return None
 
-def safe_get_rich_text(page, prop_name):
-    prop = page["properties"].get(prop_name)
-    if not prop:
-        return None
-    if prop["type"] == "rich_text":
-        arr = prop["rich_text"]
-        if not arr:
-            return None
-        return "".join([x.get("plain_text", "") for x in arr])
-    return None
-
-def safe_get_title(page):
-    title_arr = page["properties"][TITLE_PROP]["title"]
-    if not title_arr:
-        return None
-    return title_arr[0]["plain_text"]
-
-def safe_get_select_name(page, prop_name):
-    prop = page["properties"].get(prop_name)
-    if not prop:
-        return None
-    if prop["type"] == "select":
-        return prop["select"]["name"] if prop["select"] else None
-    return None
-
-def safe_get_status_name(page):
-    prop = page["properties"].get(STATUS_PROP)
-    if not prop:
-        return None
-    if prop["type"] == "status":
-        return prop["status"]["name"] if prop["status"] else None
-    if prop["type"] == "select":
-        return prop["select"]["name"] if prop["select"] else None
-    return None
-
-def safe_get_date_range(page):
+def parse_iso_to_kst_dt(s: str):
     """
-    Notion date는 datetime이 들어와도 문자열 앞 10글자(YYYY-MM-DD)로만 date 계산
+    Notion/Google ISO 문자열을 KST datetime으로 변환
     """
-    prop = page["properties"].get(DATE_PROP)
-    if not prop:
-        return (None, None)
-    if prop["type"] == "date" and prop["date"]:
-        start_raw = prop["date"].get("start")
-        end_raw = prop["date"].get("end")
-        start_d = parse_date_yyyy_mm_dd(start_raw)
-        end_d = parse_date_yyyy_mm_dd(end_raw) if end_raw else None
-        if start_d and not end_d:
-            end_d = start_d
-        return (start_d, end_d)
-    return (None, None)
+    if not s:
+        return None
+    try:
+        # "2026-02-03" 처럼 date만 오면 00:00 KST로 취급
+        if len(s) <= 10:
+            d = parse_date_yyyy_mm_dd(s)
+            if not d:
+                return None
+            return datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=KST)
+
+        # datetime ISO
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(KST)
+    except Exception:
+        return None
 
 def date_ranges_overlap(a_start, a_end, b_start, b_end) -> bool:
     """
@@ -187,7 +160,7 @@ def should_run_gcal_sync(state: dict, now: datetime) -> bool:
     """
     마지막 동기화로부터 GCAL_SYNC_EVERY_MINUTES 이상 지났으면 실행
     """
-    last = state.get("last_gcal_sync_at")  # ISO string
+    last = state.get("last_gcal_sync_at")  # ISO string (UTC)
     if not last:
         return True
     try:
@@ -252,11 +225,10 @@ def query_notion_database(filter_payload=None):
     return all_results
 
 def create_notion_page(props: dict):
-    database_id = get_database_id()
     url = "https://api.notion.com/v1/pages"
     headers = notion_headers()
     payload = {
-        "parent": {"database_id": database_id},
+        "parent": {"database_id": get_database_id()},
         "properties": props
     }
     resp = requests.post(url, headers=headers, json=payload)
@@ -278,6 +250,75 @@ def archive_notion_page(page_id: str):
     resp = requests.patch(url, headers=headers, json=payload)
     resp.raise_for_status()
     return resp.json()
+
+
+# ==============================
+# ✅ Safe getters
+# ==============================
+def safe_get_title(page):
+    title_arr = page["properties"][TITLE_PROP]["title"]
+    if not title_arr:
+        return None
+    return title_arr[0]["plain_text"]
+
+def safe_get_select_name(page, prop_name):
+    prop = page["properties"].get(prop_name)
+    if not prop:
+        return None
+    if prop["type"] == "select":
+        return prop["select"]["name"] if prop["select"] else None
+    return None
+
+def safe_get_status_name(page):
+    prop = page["properties"].get(STATUS_PROP)
+    if not prop:
+        return None
+    if prop["type"] == "status":
+        return prop["status"]["name"] if prop["status"] else None
+    if prop["type"] == "select":
+        return prop["select"]["name"] if prop["select"] else None
+    return None
+
+def safe_get_rich_text(page, prop_name):
+    prop = page["properties"].get(prop_name)
+    if not prop:
+        return None
+    if prop["type"] == "rich_text":
+        arr = prop["rich_text"]
+        if not arr:
+            return None
+        return "".join([x.get("plain_text", "") for x in arr])
+    return None
+
+def safe_get_date_range(page):
+    """
+    Notion date/datetime 모두 앞 10글자(YYYY-MM-DD)로 date 범위 계산
+    """
+    prop = page["properties"].get(DATE_PROP)
+    if not prop:
+        return (None, None)
+
+    if prop["type"] == "date" and prop["date"]:
+        start_raw = prop["date"].get("start")
+        end_raw = prop["date"].get("end")
+
+        start_d = parse_date_yyyy_mm_dd(start_raw)
+        end_d = parse_date_yyyy_mm_dd(end_raw) if end_raw else None
+        if start_d and not end_d:
+            end_d = start_d
+        return (start_d, end_d)
+
+    return (None, None)
+
+def safe_get_date_start_dt_kst(page):
+    """
+    Notion date.start를 datetime(KST)로 가져옴(없으면 None)
+    """
+    prop = page["properties"].get(DATE_PROP)
+    if not prop or prop["type"] != "date" or not prop["date"]:
+        return None
+    start_raw = prop["date"].get("start")
+    return parse_iso_to_kst_dt(start_raw)
 
 
 # ==============================
@@ -306,7 +347,7 @@ def fetch_gcal_events_for_date(service, calendar_id: str, date_obj):
             timeMax=time_max,
             singleEvents=True,
             orderBy="startTime",
-            showDeleted=False,  # 취소/삭제는 가져오지 않음
+            showDeleted=False,  # ✅ 취소/삭제는 가져오지 않음
             pageToken=page_token
         ).execute()
 
@@ -339,9 +380,6 @@ def is_declined_for_me(ev) -> bool:
     return False
 
 def parse_gcal_datetime(value: str):
-    """
-    Google Calendar ISO datetime 문자열을 KST datetime으로 변환
-    """
     if not value:
         return None
     try:
@@ -349,21 +387,21 @@ def parse_gcal_datetime(value: str):
     except Exception:
         return None
 
-def notion_props_for_gcal_event(ev, eff_date_obj):
+def notion_props_for_gcal_event(ev):
     """
     - name: '제목 2pm' 형태
     - label: 캘린더
     - states: 시작 전 / 진행 중 / 완료 (현재시간 기준 자동)
     - priority: -
-    - date: (시간 있는 일정이면 date에 시간까지 저장 -> Notion에서도 정렬이 더 좋아짐)
-    - gcal_event_id 저장
+    - date: 시간 있는 일정이면 datetime range 저장, all-day면 date만 저장
+    - gcal_event_id: ev["id"]
     """
     summary = ev.get("summary") or "(제목 없음)"
 
     start = ev.get("start", {})
     end = ev.get("end", {})
 
-    # 시작/종료 datetime 파싱 (all-day 포함)
+    # 시작/종료 파싱 (all-day 포함)
     start_dt = None
     end_dt = None
 
@@ -384,7 +422,7 @@ def notion_props_for_gcal_event(ev, eff_date_obj):
     if start_dt and not end_dt:
         end_dt = start_dt + timedelta(hours=1)
 
-    # 타이틀
+    # 제목(시간 붙이기: timed만)
     title = summary
     if start.get("dateTime") and start_dt:
         title = f"{summary} {format_time_kst(start_dt)}"
@@ -401,15 +439,14 @@ def notion_props_for_gcal_event(ev, eff_date_obj):
     else:
         states_value = "시작 전"
 
-    # Notion date 값
-    # - 시간 있는 일정: start에 datetime 저장
-    # - all-day: 날짜만 저장
+    # Notion date 저장
     if start.get("dateTime") and start_dt:
         date_start_value = start_dt.isoformat()
         date_end_value = end_dt.isoformat() if end_dt else None
     else:
-        eff_str = eff_date_obj.strftime("%Y-%m-%d")
-        date_start_value = eff_str
+        # all-day는 날짜만 저장
+        d = start_dt.date() if start_dt else effective_date()
+        date_start_value = d.strftime("%Y-%m-%d")
         date_end_value = None
 
     props = {
@@ -418,44 +455,135 @@ def notion_props_for_gcal_event(ev, eff_date_obj):
         PRIORITY_PROP: {"select": {"name": "-"}},
         DATE_PROP: {"date": {"start": date_start_value, "end": date_end_value}},
         GCAL_EVENT_ID_PROP: {"rich_text": [{"text": {"content": ev["id"]}}]},
-        # states는 우선 status로 넣고, 실패하면 caller에서 select로 재시도
-        STATUS_PROP: {"status": {"name": states_value}},
+        STATUS_PROP: {"status": {"name": states_value}},  # status 타입 우선
     }
     return props
 
-def sync_gcal_to_notion(eff_date_obj):
+def find_pages_by_gcal_event_id(eid: str):
+    return query_notion_database({
+        "property": GCAL_EVENT_ID_PROP,
+        "rich_text": {"equals": eid}
+    })
+
+def dedupe_pages_keep_oldest(pages):
+    """
+    같은 gcal_event_id가 여러 개면 가장 오래된 것 1개만 남기고 나머지는 아카이브
+    """
+    if not pages:
+        return None
+
+    def created_time(p):
+        # ISO string
+        s = p.get("created_time")
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            return datetime.max
+
+    pages_sorted = sorted(pages, key=created_time)
+    keep = pages_sorted[0]
+
+    for p in pages_sorted[1:]:
+        try:
+            archive_notion_page(p["id"])
+        except Exception:
+            pass
+
+    return keep
+
+def upsert_calendar_page_by_event(ev, by_event_id):
+    """
+    by_event_id에 있으면 업데이트
+    없으면 전수검색(보험) -> 있으면 dedupe 후 업데이트
+    없으면 생성
+    """
+    eid = ev["id"]
+    props = notion_props_for_gcal_event(ev)
+
+    keep_page = by_event_id.get(eid)
+    if not keep_page:
+        # 보험: DB 전체에서 같은 eid 찾기(중복 생성 방지)
+        pages_same = find_pages_by_gcal_event_id(eid)
+        keep_page = dedupe_pages_keep_oldest(pages_same)
+
+    if keep_page:
+        page_id = keep_page["id"]
+        try:
+            update_notion_page(page_id, props)
+        except requests.HTTPError:
+            # states가 select 타입인 DB면 재시도
+            props2 = dict(props)
+            props2[STATUS_PROP] = {"select": {"name": props[STATUS_PROP]["status"]["name"]}}
+            update_notion_page(page_id, props2)
+        return "updated"
+
+    # create
+    try:
+        create_notion_page(props)
+    except requests.HTTPError:
+        props2 = dict(props)
+        props2[STATUS_PROP] = {"select": {"name": props[STATUS_PROP]["status"]["name"]}}
+        create_notion_page(props2)
+    return "created"
+
+def sync_gcal_to_notion(base_date_obj):
+    """
+    ✅ 어제/오늘/내일 범위를 동기화
+    - 취소/불참 제외
+    - 일정 제목/시간/날짜 변경 반영(업서트)
+    - 윈도우 안에서 사라진 일정은(삭제/불참/취소/기간 이동 등) 아카이브
+    """
     calendar_id = os.getenv("GCAL_ID")
     if not calendar_id:
         raise ValueError("GCAL_ID가 비어있습니다.")
 
     service = build_gcal_service()
-    events = fetch_gcal_events_for_date(service, calendar_id, eff_date_obj)
 
-    eff_str = eff_date_obj.strftime("%Y-%m-%d")
+    # 1) GCal events: window 수집
+    window_dates = [base_date_obj + timedelta(days=d) for d in WINDOW_DAYS]
+    events_all = []
+    for d in window_dates:
+        events_all.extend(fetch_gcal_events_for_date(service, calendar_id, d))
 
-    # ✅ "오늘 캘린더" 페이지만 불러와서 매핑 (정리/아카이브용)
-    existing_pages = query_notion_database({
+    # 2) Notion existing pages: window 후보만 (date 필터는 안전하게 넓게)
+    window_start = base_date_obj + timedelta(days=min(WINDOW_DAYS))
+    window_end = base_date_obj + timedelta(days=max(WINDOW_DAYS))
+    window_end_plus1 = base_date_obj + timedelta(days=max(WINDOW_DAYS) + 1)  # 상한 버퍼
+
+    window_start_str = window_start.strftime("%Y-%m-%d")
+    window_end_plus1_str = window_end_plus1.strftime("%Y-%m-%d")
+
+    candidates = query_notion_database({
         "and": [
             {"property": CATEGORY_PROP, "select": {"equals": "캘린더"}},
-            {"property": DATE_PROP, "date": {"on_or_after": eff_str}},
-            {"property": DATE_PROP, "date": {"on_or_before": eff_str}},
             {"property": GCAL_EVENT_ID_PROP, "rich_text": {"is_not_empty": True}},
+            {"property": DATE_PROP, "date": {"is_not_empty": True}},
+            {"property": DATE_PROP, "date": {"on_or_after": window_start_str}},
+            {"property": DATE_PROP, "date": {"on_or_before": window_end_plus1_str}},
         ]
     })
 
-    by_event_id = {}
-    for p in existing_pages:
+    # 3) by_event_id 맵 + 중복 정리
+    grouped = {}
+    for p in candidates:
         eid = safe_get_rich_text(p, GCAL_EVENT_ID_PROP)
         if eid:
-            by_event_id[eid] = p
+            grouped.setdefault(eid, []).append(p)
 
+    by_event_id = {}
+    for eid, pages in grouped.items():
+        keep = dedupe_pages_keep_oldest(pages)
+        if keep:
+            by_event_id[eid] = keep
+
+    # 4) upsert for valid events
     valid_event_ids = set()
 
-    for ev in events:
+    for ev in events_all:
         if "id" not in ev:
             continue
 
-        # ✅ 취소/거절은 아예 스킵
+        # 취소/거절 제외
         if (ev.get("status") or "").lower() == "cancelled":
             continue
         if is_declined_for_me(ev):
@@ -463,66 +591,47 @@ def sync_gcal_to_notion(eff_date_obj):
 
         eid = ev["id"]
         valid_event_ids.add(eid)
+        upsert_calendar_page_by_event(ev, by_event_id)
 
-        props = notion_props_for_gcal_event(ev, eff_date_obj)
-
-        if eid in by_event_id:
-            page_id = by_event_id[eid]["id"]
-            try:
-                update_notion_page(page_id, props)
-            except requests.HTTPError:
-                # states가 select 타입이면 status 포맷이 실패할 수 있음 -> select로 재시도
-                props2 = dict(props)
-                props2[STATUS_PROP] = {"select": {"name": props[STATUS_PROP]["status"]["name"]}}
-                update_notion_page(page_id, props2)
-        else:
-            try:
-                create_notion_page(props)
-            except requests.HTTPError:
-                props2 = dict(props)
-                props2[STATUS_PROP] = {"select": {"name": props[STATUS_PROP]["status"]["name"]}}
-                create_notion_page(props2)
-
-    # ✅ 오늘 캘린더 페이지 중 이번 fetch에 없는 것(삭제/거절/취소 등)은 아카이브
+    # 5) 윈도우 안의 Notion 캘린더 페이지 중 valid에 없는 것 → 아카이브(윈도우 날짜로 로컬 판정)
     for eid, page in by_event_id.items():
-        if eid not in valid_event_ids:
-            archive_notion_page(page["id"])
+        if eid in valid_event_ids:
+            continue
+
+        start_d, end_d = safe_get_date_range(page)
+        if not start_d or not end_d:
+            continue
+
+        if date_ranges_overlap(start_d, end_d, window_start, window_end):
+            try:
+                archive_notion_page(page["id"])
+            except Exception:
+                pass
 
 
 # ==============================
 # ✅ Notion fetch (OPTIMIZED)
 #    어제/오늘/내일 윈도우에 "겹치는 것만" 가져오기
 # ==============================
-def fetch_notion_data_for_yesterday_today_tomorrow(eff_date_obj):
+def fetch_notion_data_for_window(base_date_obj):
     """
-    노션 API에서:
-      - date is_not_empty
-      - date start <= 내일
-    까지만 서버에서 받아오고,
-    파이썬에서:
-      - (start,end) 가 [어제,내일] 과 겹치는 것만 최종 필터링
-
-    이유:
-      Notion API는 date range(end)까지 제대로 필터로 잡기 어려워서,
-      정확도 유지하려면 로컬 필터가 필요함.
+    서버 필터로 후보를 줄이고(어제~내일+1),
+    로컬에서 정확하게 window overlap 필터.
     """
-    yday = eff_date_obj - timedelta(days=1)
-    tmrw = eff_date_obj + timedelta(days=1)
+    window_start = base_date_obj + timedelta(days=min(WINDOW_DAYS))
+    window_end = base_date_obj + timedelta(days=max(WINDOW_DAYS))
+    window_end_plus1 = base_date_obj + timedelta(days=max(WINDOW_DAYS) + 1)
 
-    yday_str = yday.strftime("%Y-%m-%d")
-    tmrw_str = tmrw.strftime("%Y-%m-%d")
+    start_str = window_start.strftime("%Y-%m-%d")
+    end_plus1_str = window_end_plus1.strftime("%Y-%m-%d")
 
-    # ✅ 서버에서 너무 많이 가져오지 않게: start <= 내일 조건 추가
     candidates = query_notion_database({
         "and": [
             {"property": DATE_PROP, "date": {"is_not_empty": True}},
-            {"property": DATE_PROP, "date": {"on_or_before": tmrw_str}},
+            {"property": DATE_PROP, "date": {"on_or_after": start_str}},
+            {"property": DATE_PROP, "date": {"on_or_before": end_plus1_str}},
         ]
     })
-
-    # ✅ 로컬에서 "어제~내일" 겹치는 것만 필터
-    window_start = yday
-    window_end = tmrw
 
     filtered = []
     for page in candidates:
@@ -573,33 +682,27 @@ def group_tasks_for_date(data, target_date):
         if category not in grouped:
             category = "기타"
 
-        grouped[category].append((priority, status, title))
+        grouped[category].append((priority, status, title, page))
 
     # 기본: priority 정렬
     for cat in grouped:
         grouped[cat].sort(key=lambda x: priority_rank(x[0]))
 
-    # ✅ 캘린더는 "시간 순"으로 보이게 하고 싶으면,
-    #   title 끝의 "2pm / 2:30pm"을 파싱해서 정렬해줌 (디코 출력용)
-    def calendar_sort_key(item):
-        _priority, _status, _title = item
-        # "제목 2pm" / "제목 2:30pm" 같은 패턴 찾기
-        m = re.search(r"(\d{1,2})(?::(\d{2}))?(am|pm)\s*$", _title.strip().lower())
-        if not m:
-            return (99, 99)  # 시간 없으면 아래로
-        hh = int(m.group(1))
-        mm = int(m.group(2) or "0")
-        ap = m.group(3)
-        if ap == "pm" and hh != 12:
-            hh += 12
-        if ap == "am" and hh == 12:
-            hh = 0
-        return (hh, mm)
-
+    # ✅ 캘린더는 Notion date.start 기준 "시간 오름차순" 정렬(타이틀 파싱보다 안정적)
     if "캘린더" in grouped:
-        grouped["캘린더"].sort(key=calendar_sort_key)
+        def cal_key(item):
+            _priority, _status, _title, _page = item
+            dt = safe_get_date_start_dt_kst(_page)
+            if not dt:
+                return datetime(2100, 1, 1, tzinfo=KST)
+            return dt
+        grouped["캘린더"].sort(key=cal_key)
 
-    return grouped
+    # page는 출력 전에 제거
+    cleaned = {}
+    for cat, items in grouped.items():
+        cleaned[cat] = [(p, s, t) for (p, s, t, _page) in items]
+    return cleaned
 
 def create_discord_payload(data, eff_str):
     eff_date = datetime.strptime(eff_str, "%Y-%m-%d").date()
@@ -608,16 +711,13 @@ def create_discord_payload(data, eff_str):
     lines = [f"📅 **{eff_str}**", ""]
 
     for idx, (cat, icon) in enumerate(CATEGORY_ORDER):
-        if cat == "캘린더":
-            lines.append(f"{icon} **캘린더**")
-        else:
-            lines.append(f"{icon} **{cat}**")
+        lines.append(f"{icon} **{cat}**")
 
         items = grouped.get(cat, [])
         if not items:
             lines.append("할 일 없음")
         else:
-            for (_, s, t) in items:
+            for (_prio, s, t) in items:
                 lines.append(format_task_line(title=t, status=s))
 
         if idx != len(CATEGORY_ORDER) - 1:
@@ -651,6 +751,9 @@ def edit_message(webhook_url, message_id, payload):
     return True
 
 
+# ==============================
+# ✅ Main
+# ==============================
 def main():
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     if not webhook_url:
@@ -659,32 +762,31 @@ def main():
     now = kst_now()
     state = load_state()
 
-    eff_date_obj = effective_date()
-    eff = eff_date_obj.strftime("%Y-%m-%d")
+    base_date_obj = effective_date()  # 디코의 날짜 기준(11시 롤오버)
+    eff_str = base_date_obj.strftime("%Y-%m-%d")
 
-    # ✅ 1) 캘린더 동기화는 주기에 맞을 때만 실행
+    # 1) 캘린더 -> 노션 동기화 (주기 조건 충족 시만)
     if should_run_gcal_sync(state, now):
-        sync_gcal_to_notion(eff_date_obj)
+        sync_gcal_to_notion(base_date_obj)
         mark_gcal_synced(state, now)
         save_state(state)
 
-    # ✅ 2) 노션 -> 디스코드 (어제/오늘/내일 윈도우만 조회)
-    notion_data = fetch_notion_data_for_yesterday_today_tomorrow(eff_date_obj)
-    payload = create_discord_payload(notion_data, eff)
+    # 2) 노션 -> 디스코드 (어제/오늘/내일 윈도우만 조회)
+    notion_data = fetch_notion_data_for_window(base_date_obj)
+    payload = create_discord_payload(notion_data, eff_str)
 
     saved_date = state.get("date")
     saved_message_id = state.get("message_id")
 
-    if saved_date == eff and saved_message_id:
+    if saved_date == eff_str and saved_message_id:
         edit_message(webhook_url, saved_message_id, payload)
         print(f"✅ Edited message: {saved_message_id}")
     else:
         new_id = send_new_message(webhook_url, payload)
-        state["date"] = eff
+        state["date"] = eff_str
         state["message_id"] = new_id
         save_state(state)
         print(f"✅ Created new message: {new_id}")
-
 
 if __name__ == "__main__":
     main()
