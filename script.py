@@ -13,19 +13,23 @@ from googleapiclient.discovery import build
 # ✅ Time / Rollover
 # ==============================
 KST = timezone(timedelta(hours=9))
-ROLLOVER_HOUR = 11  # 오전 11시 기준(디코/오늘 기준)
+ROLLOVER_HOUR = 9    # 오전 09시 기준(디코/오늘 기준)
+ROLLOVER_MINUTE = 30
 
 def kst_now():
     return datetime.now(KST)
 
 def effective_date(now=None):
     """
-    오전 11시 전이면 '어제', 11시(포함) 이후면 '오늘'
+    오전 9시 30분 전이면 '어제', 9시 30분(포함) 이후면 '오늘'
     """
     now = now or kst_now()
     base = now.date()
-    if now.hour < ROLLOVER_HOUR:
+
+    rollover_passed = (now.hour, now.minute) >= (ROLLOVER_HOUR, ROLLOVER_MINUTE)
+    if not rollover_passed:
         base = base - timedelta(days=1)
+
     return base
 
 def day_bounds_kst(date_obj):
