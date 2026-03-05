@@ -69,13 +69,13 @@ GCAL_EVENT_ID_PROP = "gcal_event_id"
 # ✅ Category order
 # ==============================
 CATEGORY_ORDER = [
-    ("캘린더", "📧"),
+    ("sched", "📧"),
     ("rar", "1️⃣"),
     ("ypost", "2️⃣"),
-    ("외주", "3️⃣"),
+    ("bpo", "3️⃣"),
     ("smf", "4️⃣"),
-    ("유튜브", "5️⃣"),
-    ("기타", "ℹ️"),
+    ("youtubue", "5️⃣"),
+    ("etc", "ℹ️"),
 ]
 
 PRIORITY_ORDER = ["1", "2", "3", "4", "-"]
