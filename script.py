@@ -1,4 +1,4 @@
-import os
+ㅎimport os
 import json
 import re
 import requests
@@ -58,7 +58,7 @@ def format_time_kst(dt: datetime):
 # ==============================
 TITLE_PROP = "name"         # title
 STATUS_PROP = "states"      # status/select: 시작 전 / 진행 중 / 완료 / 보류
-CATEGORY_PROP = "label"     # select: 캘린더 / 메인업무 / 외주 / 스포클 / 유튜브 / 기타
+CATEGORY_PROP = "label"     # select: 캘린더 / 메인업무 / 외주 / 스포클 / 유튜브 / etc
 PRIORITY_PROP = "priority"  # select: -, 1, 2, 3, 4
 DATE_PROP = "date"          # date (date or datetime, range ok)
 
@@ -685,7 +685,7 @@ def group_tasks_for_date(data, target_date):
         priority = safe_get_select_name(page, PRIORITY_PROP)
 
         if category not in grouped:
-            category = "기타"
+            category = "etc"
 
         grouped[category].append((priority, status, title, page))
 
