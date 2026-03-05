@@ -58,7 +58,7 @@ def format_time_kst(dt: datetime):
 # ==============================
 TITLE_PROP = "name"         # title
 STATUS_PROP = "states"      # status/select: 시작 전 / 진행 중 / 완료 / 보류
-CATEGORY_PROP = "label"     # select: 캘린더 / 메인업무 / 외주 / 스포클 / 유튜브 / etc
+CATEGORY_PROP = "label"     # select: sched / rar / ypost / bpo / smf / youtube / etc
 PRIORITY_PROP = "priority"  # select: -, 1, 2, 3, 4
 DATE_PROP = "date"          # date (date or datetime, range ok)
 
@@ -395,7 +395,7 @@ def parse_gcal_datetime(value: str):
 def notion_props_for_gcal_event(ev):
     """
     - name: '제목 2pm' 형태
-    - label: 캘린더
+    - label: sched
     - states: 시작 전 / 진행 중 / 완료 (현재시간 기준 자동)
     - priority: -
     - date: 시간 있는 일정이면 datetime range 저장, all-day면 date만 저장
@@ -456,7 +456,7 @@ def notion_props_for_gcal_event(ev):
 
     props = {
         TITLE_PROP: {"title": [{"text": {"content": title}}]},
-        CATEGORY_PROP: {"select": {"name": "캘린더"}},
+        CATEGORY_PROP: {"select": {"name": "sched"}},
         PRIORITY_PROP: {"select": {"name": "-"}},
         DATE_PROP: {"date": {"start": date_start_value, "end": date_end_value}},
         GCAL_EVENT_ID_PROP: {"rich_text": [{"text": {"content": ev["id"]}}]},
@@ -560,7 +560,7 @@ def sync_gcal_to_notion(base_date_obj):
 
     candidates = query_notion_database({
         "and": [
-            {"property": CATEGORY_PROP, "select": {"equals": "캘린더"}},
+            {"property": CATEGORY_PROP, "select": {"equals": "sched"}},
             {"property": GCAL_EVENT_ID_PROP, "rich_text": {"is_not_empty": True}},
             {"property": DATE_PROP, "date": {"is_not_empty": True}},
             {"property": DATE_PROP, "date": {"on_or_after": window_start_str}},
@@ -694,14 +694,14 @@ def group_tasks_for_date(data, target_date):
         grouped[cat].sort(key=lambda x: priority_rank(x[0]))
 
     # ✅ 캘린더는 Notion date.start 기준 "시간 오름차순" 정렬(타이틀 파싱보다 안정적)
-    if "캘린더" in grouped:
+    if "sched" in grouped:
         def cal_key(item):
             _priority, _status, _title, _page = item
             dt = safe_get_date_start_dt_kst(_page)
             if not dt:
                 return datetime(2100, 1, 1, tzinfo=KST)
             return dt
-        grouped["캘린더"].sort(key=cal_key)
+        grouped["sched"].sort(key=cal_key)
 
     # page는 출력 전에 제거
     cleaned = {}
