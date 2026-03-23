@@ -58,7 +58,7 @@ def format_time_kst(dt: datetime):
 # ==============================
 TITLE_PROP = "name"         # title
 STATUS_PROP = "states"      # status/select: 시작 전 / 진행 중 / 완료 / 보류
-CATEGORY_PROP = "label"     # multi_select: sched / rar / ypost / bpo / smf / youtube / etc
+CATEGORY_PROP = "label"     # multi_select
 PRIORITY_PROP = "priority"  # select: -, 1, 2, 3, 4
 DATE_PROP = "date"          # date (date or datetime, range ok)
 
@@ -77,6 +77,9 @@ CATEGORY_ORDER = [
     ("YOUTUBE", "5️⃣"),
     ("ETC", "ℹ️"),
 ]
+
+# 디스코드에 보여주지 않을 보조 라벨
+HIDDEN_LABELS = {"M"}
 
 PRIORITY_ORDER = ["1", "2", "3", "4", "-"]
 EMBED_COLOR = int("FF57CF", 16)
@@ -634,7 +637,7 @@ def fetch_notion_data_for_window(base_date_obj):
     """
     window_start = base_date_obj + timedelta(days=min(WINDOW_DAYS))
     window_end = base_date_obj + timedelta(days=max(WINDOW_DAYS))
-    window_end_plus1 = base_date_obj + timedelta(days=max(WINDOW_DAYS) + 1)
+    window_end_plus1 = base_date_obj + timedelta(days(max(WINDOW_DAYS) + 1))
 
     start_str = window_start.strftime("%Y-%m-%d")
     end_plus1_str = window_end_plus1.strftime("%Y-%m-%d")
@@ -677,6 +680,7 @@ def format_task_line(title, status):
 
 def group_tasks_for_date(data, target_date):
     grouped = {cat: [] for cat, _ in CATEGORY_ORDER}
+    display_categories = {cat for cat, _ in CATEGORY_ORDER}
 
     for page in data.get("results", []):
         start_d, end_d = safe_get_date_range(page)
@@ -693,21 +697,32 @@ def group_tasks_for_date(data, target_date):
         categories = safe_get_multi_select_names(page, CATEGORY_PROP)
         priority = safe_get_select_name(page, PRIORITY_PROP)
 
-        if not categories:
-            categories = ["ETC"]
-
+        normalized_categories = []
         for category in categories:
             normalized = (category or "").strip().upper()
-            if normalized not in grouped:
-                normalized = "ETC"
+            if not normalized:
+                continue
+            if normalized in HIDDEN_LABELS:
+                continue
+            if normalized in display_categories:
+                normalized_categories.append(normalized)
 
-            grouped[normalized].append((priority, status, title, page))
+        # ETC를 직접 선택한 경우에만 ETC로 가고,
+        # 알 수 없는 값이나 숨김 라벨만 있으면 아무 데도 표시하지 않음
+        if not normalized_categories:
+            continue
+
+        # 중복 제거
+        normalized_categories = list(dict.fromkeys(normalized_categories))
+
+        for category in normalized_categories:
+            grouped[category].append((priority, status, title, page))
 
     # 기본: priority 정렬
     for cat in grouped:
         grouped[cat].sort(key=lambda x: priority_rank(x[0]))
 
-    # ✅ 캘린더는 Notion date.start 기준 "시간 오름차순" 정렬
+    # 캘린더는 Notion date.start 기준 시간 오름차순
     if "SCHED" in grouped:
         def cal_key(item):
             _priority, _status, _title, _page = item
