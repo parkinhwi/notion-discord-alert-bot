@@ -284,7 +284,6 @@ def safe_get_multi_select_names(page, prop_name):
         return [item["name"] for item in prop["multi_select"]] if prop["multi_select"] else []
 
     if prop["type"] == "select":
-        # 혹시 DB 타입이 다시 select로 돌아가도 안전하게 동작
         return [prop["select"]["name"]] if prop["select"] else []
 
     return []
@@ -421,7 +420,6 @@ def notion_props_for_gcal_event(ev):
     start = ev.get("start", {})
     end = ev.get("end", {})
 
-    # 시작/종료 파싱 (all-day 포함)
     start_dt = None
     end_dt = None
 
@@ -442,12 +440,10 @@ def notion_props_for_gcal_event(ev):
     if start_dt and not end_dt:
         end_dt = start_dt + timedelta(hours=1)
 
-    # 제목(시간 붙이기: timed만)
     title = summary
     if start.get("dateTime") and start_dt:
         title = f"{summary} {format_time_kst(start_dt)}"
 
-    # 상태 자동 판정
     now_kst = kst_now()
     if start_dt and end_dt:
         if now_kst < start_dt:
@@ -459,12 +455,10 @@ def notion_props_for_gcal_event(ev):
     else:
         states_value = "시작 전"
 
-    # Notion date 저장
     if start.get("dateTime") and start_dt:
         date_start_value = start_dt.isoformat()
         date_end_value = end_dt.isoformat() if end_dt else None
     else:
-        # all-day는 날짜만 저장
         d = start_dt.date() if start_dt else effective_date()
         date_start_value = d.strftime("%Y-%m-%d")
         date_end_value = None
@@ -529,13 +523,11 @@ def upsert_calendar_page_by_event(ev, by_event_id):
         try:
             update_notion_page(page_id, props)
         except requests.HTTPError:
-            # states가 select 타입인 DB면 재시도
             props2 = dict(props)
             props2[STATUS_PROP] = {"select": {"name": props[STATUS_PROP]["status"]["name"]}}
             update_notion_page(page_id, props2)
         return "updated"
 
-    # create
     try:
         create_notion_page(props)
     except requests.HTTPError:
@@ -557,13 +549,11 @@ def sync_gcal_to_notion(base_date_obj):
 
     service = build_gcal_service()
 
-    # 1) GCal events: window 수집
     window_dates = [base_date_obj + timedelta(days=d) for d in WINDOW_DAYS]
     events_all = []
     for d in window_dates:
         events_all.extend(fetch_gcal_events_for_date(service, calendar_id, d))
 
-    # 2) Notion existing pages: window 후보만
     window_start = base_date_obj + timedelta(days=min(WINDOW_DAYS))
     window_end = base_date_obj + timedelta(days=max(WINDOW_DAYS))
     window_end_plus1 = base_date_obj + timedelta(days=max(WINDOW_DAYS) + 1)
@@ -581,7 +571,6 @@ def sync_gcal_to_notion(base_date_obj):
         ]
     })
 
-    # 3) by_event_id 맵 + 중복 정리
     grouped = {}
     for p in candidates:
         eid = safe_get_rich_text(p, GCAL_EVENT_ID_PROP)
@@ -594,13 +583,11 @@ def sync_gcal_to_notion(base_date_obj):
         if keep:
             by_event_id[eid] = keep
 
-    # 4) upsert for valid events
     valid_event_ids = set()
 
     for ev in events_all:
         if "id" not in ev:
             continue
-
         if (ev.get("status") or "").lower() == "cancelled":
             continue
         if is_declined_for_me(ev):
@@ -610,7 +597,6 @@ def sync_gcal_to_notion(base_date_obj):
         valid_event_ids.add(eid)
         upsert_calendar_page_by_event(ev, by_event_id)
 
-    # 5) 윈도우 안의 Notion 캘린더 페이지 중 valid에 없는 것 → 아카이브
     for eid, page in by_event_id.items():
         if eid in valid_event_ids:
             continue
@@ -628,7 +614,6 @@ def sync_gcal_to_notion(base_date_obj):
 
 # ==============================
 # ✅ Notion fetch (OPTIMIZED)
-#    어제/오늘/내일 윈도우에 "겹치는 것만" 가져오기
 # ==============================
 def fetch_notion_data_for_window(base_date_obj):
     """
@@ -637,7 +622,7 @@ def fetch_notion_data_for_window(base_date_obj):
     """
     window_start = base_date_obj + timedelta(days=min(WINDOW_DAYS))
     window_end = base_date_obj + timedelta(days=max(WINDOW_DAYS))
-    window_end_plus1 = base_date_obj + timedelta(days(max(WINDOW_DAYS) + 1))
+    window_end_plus1 = base_date_obj + timedelta(days=max(WINDOW_DAYS) + 1)
 
     start_str = window_start.strftime("%Y-%m-%d")
     end_plus1_str = window_end_plus1.strftime("%Y-%m-%d")
@@ -707,22 +692,19 @@ def group_tasks_for_date(data, target_date):
             if normalized in display_categories:
                 normalized_categories.append(normalized)
 
-        # ETC를 직접 선택한 경우에만 ETC로 가고,
-        # 알 수 없는 값이나 숨김 라벨만 있으면 아무 데도 표시하지 않음
+        # ETC를 직접 선택한 경우에만 ETC로 표시
+        # 숨김 라벨 / 알 수 없는 라벨만 있으면 표시 안 함
         if not normalized_categories:
             continue
 
-        # 중복 제거
         normalized_categories = list(dict.fromkeys(normalized_categories))
 
         for category in normalized_categories:
             grouped[category].append((priority, status, title, page))
 
-    # 기본: priority 정렬
     for cat in grouped:
         grouped[cat].sort(key=lambda x: priority_rank(x[0]))
 
-    # 캘린더는 Notion date.start 기준 시간 오름차순
     if "SCHED" in grouped:
         def cal_key(item):
             _priority, _status, _title, _page = item
