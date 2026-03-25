@@ -617,22 +617,16 @@ def sync_gcal_to_notion(base_date_obj):
 # ==============================
 def fetch_notion_data_for_window(base_date_obj):
     """
-    서버 필터로 후보를 줄이고(어제~내일+1),
+    날짜가 들어있는 페이지를 넉넉하게 가져온 뒤,
     로컬에서 정확하게 window overlap 필터.
+    장기 일정의 마지막 날 누락 방지용.
     """
     window_start = base_date_obj + timedelta(days=min(WINDOW_DAYS))
     window_end = base_date_obj + timedelta(days=max(WINDOW_DAYS))
-    window_end_plus1 = base_date_obj + timedelta(days=max(WINDOW_DAYS) + 1)
-
-    start_str = window_start.strftime("%Y-%m-%d")
-    end_plus1_str = window_end_plus1.strftime("%Y-%m-%d")
 
     candidates = query_notion_database({
-        "and": [
-            {"property": DATE_PROP, "date": {"is_not_empty": True}},
-            {"property": DATE_PROP, "date": {"on_or_after": start_str}},
-            {"property": DATE_PROP, "date": {"on_or_before": end_plus1_str}},
-        ]
+        "property": DATE_PROP,
+        "date": {"is_not_empty": True},
     })
 
     filtered = []
