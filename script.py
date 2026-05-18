@@ -71,8 +71,7 @@ GCAL_EVENT_ID_PROP = "gcal_event_id"
 CATEGORY_ORDER = [
     ("SCHED", "📧"),
     ("RAR", "1️⃣"),
-    ("YPOST", "2️⃣"),
-    ("OS", "3️⃣"),
+    ("OS", "2️⃣"),
     ("SMF", "4️⃣"),
     ("YOUTUBE", "5️⃣"),
     ("ETC", "ℹ️"),
